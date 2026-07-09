@@ -213,7 +213,6 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = signal::ctrl_c().await {
             tracing::error!(error = %e, "安装 Ctrl+C 信号处理器失败");
-            return;
         }
     };
 

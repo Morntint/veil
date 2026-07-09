@@ -16,7 +16,7 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use http::{HeaderMap, Method, Request, Uri};
+use http::{HeaderMap, Request, Uri};
 use tracing::Instrument;
 
 use crate::config::SharedConfig;
@@ -322,10 +322,6 @@ fn set_host_header(headers: &mut HeaderMap, upstream: &str) {
         }
     }
 }
-
-// 避免未使用导入警告（Method 在泛型约束中间接使用）
-#[allow(dead_code)]
-fn _ensure_method_in_scope(_m: Method) {}
 
 #[cfg(test)]
 mod tests {

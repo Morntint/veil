@@ -41,17 +41,10 @@ pub fn validate(cfg: &AppConfig) -> Result<()> {
         ));
     }
 
-    // 改写规则启用时正则必须可编译
-    if cfg.cors.enable {
-        // CORS 无额外必检项
-    }
-
-    if cfg.security.enable_rate_limit {
-        if cfg.security.rate_limit_per_second == 0 {
-            return Err(GatewayError::Config(
-                "security.rate_limit_per_second 启用限流时必须大于 0".into(),
-            ));
-        }
+    if cfg.security.enable_rate_limit && cfg.security.rate_limit_per_second == 0 {
+        return Err(GatewayError::Config(
+            "security.rate_limit_per_second 启用限流时必须大于 0".into(),
+        ));
     }
 
     Ok(())

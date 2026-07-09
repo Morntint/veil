@@ -93,16 +93,17 @@ mod tests {
 
     #[test]
     fn enabled_cors_returns_layer() {
-        let mut cfg = CorsConfig::default();
-        cfg.enable = true;
+        let cfg = CorsConfig { enable: true, ..Default::default() };
         assert!(build_cors_layer(&cfg).is_some());
     }
 
     #[test]
     fn cors_with_specific_origins() {
-        let mut cfg = CorsConfig::default();
-        cfg.enable = true;
-        cfg.allowed_origins = vec!["https://example.com".into(), "https://api.example.com".into()];
+        let cfg = CorsConfig {
+            enable: true,
+            allowed_origins: vec!["https://example.com".into(), "https://api.example.com".into()],
+            ..Default::default()
+        };
         assert!(build_cors_layer(&cfg).is_some());
     }
 }

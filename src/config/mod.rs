@@ -375,7 +375,7 @@ impl Default for AuthConfig {
 }
 
 /// 路径改写配置（路由级）
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RewriteConfig {
     #[serde(default)]
     pub enable: bool,
@@ -385,16 +385,6 @@ pub struct RewriteConfig {
     /// 替换字符串（支持 $1 $2 捕获组）
     #[serde(default)]
     pub path_replace: String,
-}
-
-impl Default for RewriteConfig {
-    fn default() -> Self {
-        Self {
-            enable: false,
-            path_pattern: String::new(),
-            path_replace: String::new(),
-        }
-    }
 }
 
 // ---- 默认值函数 ----
