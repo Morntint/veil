@@ -24,6 +24,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // 强制初始化启动时间戳，确保健康检查的 uptime 从程序启动时刻计算
+    let _ = monitor::health::started_at();
+
     // 启动配置热更新监听（watcher 需保持存活）
     let _watcher = config::watcher::spawn(shared.clone(), config_dir, env)?;
 

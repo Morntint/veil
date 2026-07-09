@@ -33,7 +33,7 @@ pub async fn ip_blacklist_middleware(
     let client_ip = addr.ip().to_string();
     if blacklist.iter().any(|b| {
         // 支持精确匹配和 CIDR 前缀匹配（简易：仅精确匹配 + 前缀通配）
-        b == &client_ip || b.ends_with('*') && client_ip.starts_with(&b[..b.len() - 1])
+        b == &client_ip || (b.ends_with('*') && client_ip.starts_with(&b[..b.len() - 1]))
     }) {
         metrics::record_auth_failure("ip_blacklisted");
         tracing::warn!(client_ip = %client_ip, "IP 黑名单拦截");

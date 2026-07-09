@@ -88,12 +88,12 @@ fn apply_env_overrides(cfg: &mut AppConfig) {
             cfg.server.port = p;
         }
     }
-    if let Ok(v) = std::env::var("VEIL_LOG_LEVEL") {
+    if let Ok(v) = std::env::var(constant::env_keys::LOG_LEVEL) {
         if !v.is_empty() {
             cfg.log.level = v;
         }
     }
-    if let Ok(v) = std::env::var("VEIL_LOG_FORMAT") {
+    if let Ok(v) = std::env::var(constant::env_keys::LOG_FORMAT) {
         if !v.is_empty() {
             cfg.log.format = v;
         }

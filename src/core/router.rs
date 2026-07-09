@@ -11,9 +11,34 @@
 //! 路由信息来源于 `SharedConfig`，每次请求实时读取，因此配置热更新后立即可见，
 //! 无需重启或重建路由表。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use regex::Regex;
+
 use crate::config::RouteConfig;
+
+/// 正则缓存：避免每次请求重新编译相同 pattern
+/// key = pattern 字符串，value = 编译后的 Regex（clone 零拷贝）
+static REGEX_CACHE: Lazy<Mutex<HashMap<String, Regex>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 从缓存获取或编译正则，编译失败返回 None
+fn get_cached_regex(pattern: &str) -> Option<Regex> {
+    let mut cache = REGEX_CACHE.lock();
+    if let Some(re) = cache.get(pattern) {
+        return Some(re.clone());
+    }
+    match Regex::new(pattern) {
+        Ok(re) => {
+            cache.insert(pattern.to_string(), re.clone());
+            Some(re)
+        }
+        Err(_) => None,
+    }
+}
 
 /// 在给定路由集合中匹配路径，返回命中的路由（包装为 Arc 以便在请求上下文中共享）
 ///
@@ -36,10 +61,10 @@ pub fn matches_path(match_type: &str, pattern: &str, path: &str) -> bool {
     match match_type {
         "exact" => path == pattern,
         "prefix" => path.starts_with(pattern),
-        "regex" => match regex::Regex::new(pattern) {
-            Ok(re) => re.is_match(path),
-            Err(e) => {
-                tracing::warn!(pattern = %pattern, error = %e, "路由正则编译失败，跳过该路由");
+        "regex" => match get_cached_regex(pattern) {
+            Some(re) => re.is_match(path),
+            None => {
+                tracing::warn!(pattern = %pattern, "路由正则编译失败，跳过该路由");
                 false
             }
         },

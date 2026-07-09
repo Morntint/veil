@@ -26,4 +26,8 @@ pub mod env_keys {
     pub const SERVER_PORT: &str = "VEIL_SERVER_PORT";
     /// 服务监听地址覆盖
     pub const HOST: &str = "VEIL_HOST";
+    /// 日志级别覆盖
+    pub const LOG_LEVEL: &str = "VEIL_LOG_LEVEL";
+    /// 日志格式覆盖
+    pub const LOG_FORMAT: &str = "VEIL_LOG_FORMAT";
 }
