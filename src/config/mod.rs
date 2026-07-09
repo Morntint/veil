@@ -11,10 +11,18 @@ pub mod loader;
 pub mod validate;
 pub mod watcher;
 
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-/// 共享配置类型：读写锁保护，支持热更新原子替换
-pub type SharedConfig = std::sync::Arc<parking_lot::RwLock<AppConfig>>;
+use crate::constant;
+
+/// 共享配置类型：无锁原子替换，支持热更新
+///
+/// 读端 `load_full()` 返回 `Arc<AppConfig>`（零拷贝、无阻塞）；
+/// 写端 `store(Arc::new(new_cfg))` 原子替换。
+pub type SharedConfig = std::sync::Arc<ArcSwap<AppConfig>>;
 
 /// 网关全局配置
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -34,7 +42,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
-    pub routes: Vec<RouteConfig>,
+    pub routes: Vec<Arc<RouteConfig>>,
     #[serde(default)]
     pub security: SecurityConfig,
     #[serde(default)]
@@ -45,6 +53,9 @@ pub struct AppConfig {
     pub monitor: MonitorConfig,
     #[serde(default)]
     pub admin: AdminConfig,
+    /// 路由匹配索引（预编译的 RegexSet，热更新时自动重建）
+    #[serde(skip)]
+    pub route_index: crate::core::router::RouteIndex,
 }
 
 impl Default for AppConfig {
@@ -62,6 +73,7 @@ impl Default for AppConfig {
             auth: AuthConfig::default(),
             monitor: MonitorConfig::default(),
             admin: AdminConfig::default(),
+            route_index: crate::core::router::RouteIndex::default(),
         }
     }
 }
@@ -78,6 +90,9 @@ pub struct ServerConfig {
     pub workers: usize,
     #[serde(default = "default_graceful_shutdown")]
     pub graceful_shutdown_timeout_secs: u64,
+    /// TLS 监听配置（可选，配置后启用 HTTPS）
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 impl Default for ServerConfig {
@@ -87,8 +102,23 @@ impl Default for ServerConfig {
             port: default_port(),
             workers: 0,
             graceful_shutdown_timeout_secs: default_graceful_shutdown(),
+            tls: TlsConfig::default(),
         }
     }
+}
+
+/// TLS 配置（监听端）
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TlsConfig {
+    /// 是否启用 TLS 监听
+    #[serde(default)]
+    pub enable: bool,
+    /// 证书文件路径（PEM 格式）
+    #[serde(default)]
+    pub cert_path: String,
+    /// 私钥文件路径（PEM 格式）
+    #[serde(default)]
+    pub key_path: String,
 }
 
 /// 日志配置
@@ -148,6 +178,12 @@ pub struct ProxyConfig {
     pub connect_timeout_secs: u64,
     #[serde(default = "default_max_idle_per_host")]
     pub max_idle_per_host: usize,
+    /// 是否信任入站 X-Forwarded-For 头
+    ///
+    /// 默认 false：丢弃客户端自发的 XFF 后再追加真实 IP，防伪造。
+    /// 网关部署在受信代理（ALB/Ingress）后时可设为 true。
+    #[serde(default)]
+    pub trust_client_xff: bool,
 }
 
 impl Default for ProxyConfig {
@@ -156,6 +192,7 @@ impl Default for ProxyConfig {
             timeout_secs: default_proxy_timeout(),
             connect_timeout_secs: default_proxy_connect_timeout(),
             max_idle_per_host: default_max_idle_per_host(),
+            trust_client_xff: false,
         }
     }
 }
@@ -168,6 +205,9 @@ pub struct RouteMatchConfig {
     pub match_type: String,
     #[serde(default)]
     pub path: String,
+    /// 预编译的正则（match_type=regex 时由加载阶段编译，序列化时跳过）
+    #[serde(skip)]
+    pub compiled_regex: Option<regex::Regex>,
 }
 
 impl Default for RouteMatchConfig {
@@ -175,6 +215,7 @@ impl Default for RouteMatchConfig {
         Self {
             match_type: default_match_type(),
             path: String::new(),
+            compiled_regex: None,
         }
     }
 }
@@ -245,12 +286,19 @@ pub struct SecurityConfig {
     pub rate_limit_per_second: u32,
     #[serde(default = "default_rate_burst")]
     pub rate_limit_burst: u32,
+    /// 限流器 GC 间隔（秒）：定期清理过期的 per-IP 状态，防止内存耗尽
+    #[serde(default = "default_rate_limit_gc_secs")]
+    pub rate_limit_gc_secs: u64,
     #[serde(default)]
     pub enable_ip_blacklist: bool,
     #[serde(default)]
     pub ip_blacklist: Vec<String>,
-    #[serde(default = "default_request_size_limit")]
-    pub request_size_limit_bytes: usize,
+    /// 受信代理 CIDR 列表（如 ALB/Ingress 内网网段）
+    ///
+    /// 非空时，限流与黑名单使用 X-Forwarded-For 中最后一个非受信 IP 作为真实客户端 IP。
+    /// 为空时，直接使用 TCP peer IP。
+    #[serde(default)]
+    pub trusted_proxy_cidrs: Vec<String>,
 }
 
 impl Default for SecurityConfig {
@@ -259,9 +307,10 @@ impl Default for SecurityConfig {
             enable_rate_limit: default_true(),
             rate_limit_per_second: default_rate_per_second(),
             rate_limit_burst: default_rate_burst(),
+            rate_limit_gc_secs: default_rate_limit_gc_secs(),
             enable_ip_blacklist: false,
             ip_blacklist: Vec::new(),
-            request_size_limit_bytes: default_request_size_limit(),
+            trusted_proxy_cidrs: Vec::new(),
         }
     }
 }
@@ -385,6 +434,12 @@ pub struct RewriteConfig {
     /// 替换字符串（支持 $1 $2 捕获组）
     #[serde(default)]
     pub path_replace: String,
+    /// 是否替换所有匹配项（false 仅替换首个，true 替换全部）
+    #[serde(default)]
+    pub replace_all: bool,
+    /// 预编译的改写正则（enable=true 时由加载阶段编译，序列化时跳过）
+    #[serde(skip)]
+    pub compiled_regex: Option<regex::Regex>,
 }
 
 // ---- 默认值函数 ----
@@ -393,13 +448,13 @@ fn default_env_value() -> String {
     "default".into()
 }
 fn default_host() -> String {
-    "0.0.0.0".into()
+    constant::DEFAULT_HOST.into()
 }
 fn default_port() -> u16 {
-    8080
+    constant::DEFAULT_PORT
 }
 fn default_graceful_shutdown() -> u64 {
-    30
+    constant::DEFAULT_GRACEFUL_SHUTDOWN_SECS
 }
 fn default_log_level() -> String {
     "info".into()
@@ -448,6 +503,9 @@ fn default_rate_per_second() -> u32 {
 }
 fn default_rate_burst() -> u32 {
     2000
+}
+fn default_rate_limit_gc_secs() -> u64 {
+    300
 }
 fn default_metrics_path() -> String {
     "/metrics".into()

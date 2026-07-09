@@ -14,10 +14,13 @@ pub fn init(level: &str, format: &str) {
 
     let registry = tracing_subscriber::registry().with(filter);
 
-    let _ = match format {
+    let result = match format {
         "json" => registry.with(fmt::layer().json()).try_init(),
         _ => registry.with(fmt::layer()).try_init(),
     };
+    if let Err(e) = result {
+        tracing::debug!(error = %e, "全局日志订阅者初始化被跳过（可能已初始化）");
+    }
 }
 
 #[cfg(test)]

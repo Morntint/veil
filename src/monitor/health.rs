@@ -22,7 +22,7 @@ pub const STATUS_DEGRADED: &str = "degraded";
 /// 返回网关运行状态、版本、启动时长（秒）、配置版本、路由数量。
 pub fn health_json(config: &SharedConfig) -> serde_json::Value {
     let (version, env, routes_count, cfg_version) = {
-        let c = config.read();
+        let c = config.load_full();
         (
             crate::constant::VERSION,
             c.env.clone(),
@@ -57,12 +57,12 @@ pub fn started_at() -> Instant {
 mod tests {
     use super::*;
     use crate::config::AppConfig;
+    use arc_swap::ArcSwap;
     use std::sync::Arc;
-    use parking_lot::RwLock;
 
     #[test]
     fn health_json_contains_required_fields() {
-        let cfg: SharedConfig = Arc::new(RwLock::new(AppConfig::default()));
+        let cfg: SharedConfig = Arc::new(ArcSwap::from_pointee(AppConfig::default()));
         let json = health_json(&cfg);
         assert_eq!(json["status"], "ok");
         assert!(json["uptime_secs"].as_u64().is_some());

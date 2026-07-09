@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
     let shared = config::loader::load_shared(&config_dir, &env)?;
 
     {
-        let cfg = shared.read();
+        let cfg = shared.load_full();
         monitor::log::init(&cfg.log.level, &cfg.log.format);
         tracing::info!(
             version = constant::VERSION,
@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = monitor::health::started_at();
 
     // 启动配置热更新监听（watcher 需保持存活）
-    let _watcher = config::watcher::spawn(shared.clone(), config_dir, env)?;
+    let _watcher = config::watcher::spawn(shared.clone(), config_dir.clone(), env.clone())?;
 
-    network::server::run(shared).await
+    network::server::run(shared, config_dir, env).await
 }

@@ -12,8 +12,19 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::config::CorsConfig;
 
 /// 从配置构造 CORS 层，未启用时返回 None
+///
+/// 安全检查：allow_credentials=true 时拒绝 Any 源（tower-http 会 panic），
+/// 此时必须显式指定 allowed_origins，否则返回 None 表示配置非法。
 pub fn build_cors_layer(cfg: &CorsConfig) -> Option<CorsLayer> {
     if !cfg.enable {
+        return None;
+    }
+
+    // allow_credentials=true 且未指定具体 origins → 拒绝构建（tower-http 会 panic）
+    if cfg.allow_credentials && cfg.allowed_origins.is_empty() {
+        tracing::error!(
+            "CORS 配置非法：allow_credentials=true 时必须显式指定 allowed_origins，不能使用通配符 Any"
+        );
         return None;
     }
 
@@ -29,6 +40,7 @@ pub fn build_cors_layer(cfg: &CorsConfig) -> Option<CorsLayer> {
             .filter_map(|o| o.parse().ok())
             .collect();
         if origins.is_empty() {
+            // 指定了 origins 但全部解析失败 → 回退到 Any（allow_credentials 已在上面拦截）
             layer.allow_origin(Any)
         } else {
             layer.allow_origin(origins)
@@ -102,6 +114,29 @@ mod tests {
         let cfg = CorsConfig {
             enable: true,
             allowed_origins: vec!["https://example.com".into(), "https://api.example.com".into()],
+            ..Default::default()
+        };
+        assert!(build_cors_layer(&cfg).is_some());
+    }
+
+    #[test]
+    fn cors_credentials_with_any_origin_returns_none() {
+        // allow_credentials=true + 无 origins → 必须拒绝构建（tower-http 会 panic）
+        let cfg = CorsConfig {
+            enable: true,
+            allow_credentials: true,
+            allowed_origins: vec![],
+            ..Default::default()
+        };
+        assert!(build_cors_layer(&cfg).is_none());
+    }
+
+    #[test]
+    fn cors_credentials_with_specific_origins_ok() {
+        let cfg = CorsConfig {
+            enable: true,
+            allow_credentials: true,
+            allowed_origins: vec!["https://example.com".into()],
             ..Default::default()
         };
         assert!(build_cors_layer(&cfg).is_some());

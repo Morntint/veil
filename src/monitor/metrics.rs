@@ -135,10 +135,35 @@ static UPSTREAM_RETRIES: Lazy<CounterVec> = Lazy::new(|| {
 // ---- 指标采集辅助函数 ----
 // 调用这些函数会触发对应 Lazy 静态的初始化（仅首次），后续调用零开销。
 
+/// 将状态码转为 &'static str，避免每次请求 to_string 分配
+fn status_str(status: u16) -> &'static str {
+    match status {
+        200 => "200",
+        201 => "201",
+        204 => "204",
+        301 => "301",
+        302 => "302",
+        304 => "304",
+        400 => "400",
+        401 => "401",
+        403 => "403",
+        404 => "404",
+        408 => "408",
+        409 => "409",
+        413 => "413",
+        429 => "429",
+        500 => "500",
+        502 => "502",
+        503 => "503",
+        504 => "504",
+        _ => "other",
+    }
+}
+
 /// 记录一次 HTTP 请求（计数 + 耗时）
 pub fn record_request(method: &str, route: &str, status: u16, duration: Duration) {
     REQUESTS_TOTAL
-        .with_label_values(&[method, &status.to_string(), route])
+        .with_label_values(&[method, status_str(status), route])
         .inc();
     REQUEST_DURATION
         .with_label_values(&[method, route])
@@ -168,7 +193,7 @@ pub fn record_auth_failure(reason: &str) {
 /// 记录一次上游转发（计数 + 耗时）
 pub fn record_upstream_request(upstream: &str, status: u16, duration: Duration) {
     UPSTREAM_REQUESTS
-        .with_label_values(&[upstream, &status.to_string()])
+        .with_label_values(&[upstream, status_str(status)])
         .inc();
     UPSTREAM_DURATION
         .with_label_values(&[upstream])
@@ -235,7 +260,9 @@ mod tests {
 
     #[test]
     fn render_outputs_metrics_text() {
+        // 自包含地触发所有指标的样本写入，避免依赖其他测试在并行执行顺序上先于本测试
         record_request("GET", "render_test", 200, Duration::from_millis(10));
+        record_upstream_request("http://127.0.0.1:9001", 200, Duration::from_millis(5));
         let output = render();
         assert!(
             output.contains("gateway_http_requests_total"),

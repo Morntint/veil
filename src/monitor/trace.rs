@@ -81,15 +81,26 @@ pub fn log_request_end(
     );
 }
 
+/// request_id 最大长度（字节），超出截断，防止日志注入与内存放大
+const REQUEST_ID_MAX_LEN: usize = 128;
+
 /// 从请求头中提取或生成 request_id
 ///
 /// 优先使用上游传入的 X-Request-Id，便于跨服务链路关联；
-/// 无则生成 UUID v4。
+/// 无则生成 UUID v4。入站值会做字符集校验与长度截断，防止日志注入。
 pub fn resolve_request_id(headers: &http::HeaderMap) -> String {
     if let Some(val) = headers.get("x-request-id") {
         if let Ok(s) = val.to_str() {
             if !s.is_empty() {
-                return s.to_string();
+                // 仅允许可见 ASCII 字符（0x21-0x7E），拒绝控制字符与空白
+                let sanitized: String = s
+                    .chars()
+                    .filter(|&c| c.is_ascii_graphic())
+                    .take(REQUEST_ID_MAX_LEN)
+                    .collect();
+                if !sanitized.is_empty() {
+                    return sanitized;
+                }
             }
         }
     }

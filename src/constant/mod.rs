@@ -16,6 +16,13 @@ pub const DEFAULT_CONFIG_DIR: &str = "config";
 /// 默认运行环境
 pub const DEFAULT_ENV: &str = "default";
 
+/// 上游连接 TCP keepalive 间隔（秒）
+pub const UPSTREAM_KEEPALIVE_SECS: u64 = 60;
+/// 上游连接池空闲超时（秒）
+pub const UPSTREAM_POOL_IDLE_TIMEOUT_SECS: u64 = 90;
+/// 配置热更新去抖静默期（毫秒）
+pub const CONFIG_WATCH_DEBOUNCE_MS: u64 = 300;
+
 /// 环境变量名集合
 pub mod env_keys {
     /// 运行环境：default / dev / prod

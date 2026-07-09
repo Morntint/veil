@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use http::{HeaderMap, Request};
+use subtle::ConstantTimeEq;
 
 use crate::monitor::metrics;
 use crate::network::server::AppState;
@@ -19,7 +20,7 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     let (enabled, token, header_name, scheme, skip_paths) = {
-        let cfg = state.config.read();
+        let cfg = state.config.load_full();
         (
             cfg.auth.enable,
             cfg.auth.token.clone(),
@@ -33,9 +34,9 @@ pub async fn auth_middleware(
         return next.run(req).await;
     }
 
-    // 跳过鉴权路径
+    // 跳过鉴权路径：精确匹配或同级前缀（以 skip/ 开头），避免 /healthzz 绕过
     let path = req.uri().path();
-    if skip_paths.iter().any(|p| path.starts_with(p.as_str())) {
+    if skip_paths.iter().any(|p| path == p.as_str() || path.starts_with(&format!("{}/", p))) {
         return next.run(req).await;
     }
 
@@ -46,19 +47,24 @@ pub async fn auth_middleware(
     } else {
         format!("{scheme} {token}")
     };
+    let expected_bytes = expected.as_bytes();
 
     match headers.get(&header_name) {
         Some(val) => {
-            let val_str = val.to_str().unwrap_or("");
-            if val_str != expected {
+            // 按字节比较，兼容非 ASCII Token；长度不同时先比较长度再常量时间比较，
+            // 避免短路暴露首字节差异的时序侧信道
+            let val_bytes = val.as_bytes();
+            let ok = val_bytes.len() == expected_bytes.len()
+                && val_bytes.ct_eq(expected_bytes).into();
+            if !ok {
                 metrics::record_auth_failure("invalid_token");
-                tracing::warn!(path = %path, "Token 鉴权失败");
+                tracing::debug!(path = %path, "Token 鉴权失败");
                 return GatewayError::Auth("Token 无效".into()).into_response();
             }
         }
         None => {
             metrics::record_auth_failure("missing_token");
-            tracing::warn!(path = %path, header = %header_name, "缺少鉴权头");
+            tracing::debug!(path = %path, header = %header_name, "缺少鉴权头");
             return GatewayError::Auth("缺少鉴权请求头".into()).into_response();
         }
     }

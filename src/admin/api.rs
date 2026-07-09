@@ -32,12 +32,12 @@ pub fn admin_router() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::config::{AppConfig, SharedConfig};
-    use parking_lot::RwLock;
+    use arc_swap::ArcSwap;
     use std::sync::Arc;
 
     #[test]
     fn admin_router_builds_without_error() {
-        let cfg: SharedConfig = Arc::new(RwLock::new(AppConfig::default()));
+        let cfg: SharedConfig = Arc::new(ArcSwap::from_pointee(AppConfig::default()));
         let state = AppState::from_config(cfg);
         let _router: Router = admin_router().with_state(state);
     }

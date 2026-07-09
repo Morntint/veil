@@ -17,6 +17,7 @@ use axum::body::{Body, to_bytes};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use http::{HeaderMap, Request, Uri};
+use http_body_util::BodyExt;
 use tracing::Instrument;
 
 use crate::config::SharedConfig;
@@ -25,6 +26,14 @@ use crate::middleware::{retry, rewrite};
 use crate::monitor::metrics;
 use crate::network::connection::UpstreamClient;
 use crate::network::protocol;
+
+/// 响应扩展：携带命中路由名称，供外层 metrics 记录低基数标签
+///
+/// 避免 Prometheus 标签使用原始 path（用户 ID 等高基字段会导致序列爆炸），
+/// 改用 route.name 作为标签维度。
+#[derive(Clone, Debug)]
+pub struct RouteLabel(pub String);
+
 use crate::utils::{GatewayError, Result};
 
 /// 反向代理转发入口
@@ -40,18 +49,14 @@ pub async fn forward(
 ) -> Response {
     let method = req.method().clone();
     let original_uri = req.uri().clone();
-    let path = original_uri
-        .path_and_query()
-        .map(|pq| pq.as_str().to_string())
-        .unwrap_or_else(|| original_uri.path().to_string());
     let path_only = original_uri.path().to_string();
 
-    let mut ctx = RequestContext::new(client_addr, method.clone(), path.clone());
+    let mut ctx = RequestContext::new(client_addr, method.clone(), path_only.clone());
 
     // 1. 路由匹配（读取 SharedConfig，实时反映热更新）
     let route = {
-        let cfg = config.read();
-        router::match_route(&cfg.routes, &path_only)
+        let cfg = config.load_full();
+        router::match_route(&cfg.routes, &path_only, &cfg.route_index)
     };
     let route = match route {
         Some(r) => r,
@@ -59,26 +64,23 @@ pub async fn forward(
             tracing::info!(
                 request_id = %ctx.request_id,
                 method = %method,
-                path = %path,
+                path = %path_only,
                 "未匹配到路由"
             );
-            return GatewayError::Route(format!("未匹配路由: {path}")).into_response();
+            return GatewayError::Route(format!("未匹配路由: {path_only}")).into_response();
         }
     };
     ctx = ctx.with_route(route.clone());
+    let route_name = ctx.route_name().to_string();
 
-    // 2. 缓冲请求体（为重试做准备，Bytes 克隆为零拷贝引用计数）
-    let (body_limit, proxy_timeout_secs) = {
-        let cfg = config.read();
-        (cfg.network.request_size_limit_bytes, cfg.proxy.timeout_secs)
-    };
-    let original_headers = req.headers().clone();
-    let body_bytes = match to_bytes(req.into_body(), body_limit).await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(request_id = %ctx.request_id, error = %e, "读取请求体失败");
-            return GatewayError::PayloadTooLarge(format!("读取请求体失败: {e}")).into_response();
-        }
+    // 2. 读取全局配置（代理超时、请求体限制、XFF 信任）
+    let (body_limit, proxy_timeout_secs, trust_client_xff) = {
+        let cfg = config.load_full();
+        (
+            cfg.network.request_size_limit_bytes,
+            cfg.proxy.timeout_secs,
+            cfg.proxy.trust_client_xff,
+        )
     };
 
     // 3. 解析超时与重试次数：路由级优先，否则用全局配置
@@ -89,11 +91,76 @@ pub async fn forward(
     };
     let max_attempts = route.retries.saturating_add(1).max(1);
 
-    // 4. 重试循环：每次重新选择上游，避免持续命中同一故障节点
+    let original_headers = req.headers().clone();
+
+    // 4. 请求体策略：需重试时缓冲到内存（Bytes 零拷贝克隆），否则直接流式转发
+    let mut resp = if max_attempts > 1 {
+        // --- 缓冲模式：支持重试 ---
+        let body_bytes = match to_bytes(req.into_body(), body_limit).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(request_id = %ctx.request_id, error = %e, "读取请求体失败");
+                return GatewayError::PayloadTooLarge(format!("读取请求体失败: {e}")).into_response();
+            }
+        };
+        forward_with_retry(
+            ctx,
+            &method,
+            &original_uri,
+            &original_headers,
+            &body_bytes,
+            &route,
+            max_attempts,
+            timeout_secs,
+            trust_client_xff,
+            client_addr,
+            client,
+            balancer,
+        )
+        .await
+    } else {
+        // --- 流式模式：无重试，请求体直接透传（支持 SSE/大文件上传） ---
+        forward_streaming(
+            ctx,
+            &method,
+            &original_uri,
+            &original_headers,
+            req.into_body(),
+            &route,
+            timeout_secs,
+            trust_client_xff,
+            client_addr,
+            client,
+            balancer,
+        )
+        .await
+    };
+
+    // 注入路由名称到响应扩展，供外层 metrics 用低基数标签记录
+    resp.extensions_mut().insert(RouteLabel(route_name));
+    resp
+}
+
+/// 缓冲模式转发：请求体已在内存中，支持多次重试
+#[allow(clippy::too_many_arguments)]
+async fn forward_with_retry(
+    mut ctx: RequestContext,
+    method: &http::Method,
+    original_uri: &Uri,
+    original_headers: &HeaderMap,
+    body_bytes: &Bytes,
+    route: &std::sync::Arc<crate::config::RouteConfig>,
+    max_attempts: u32,
+    timeout_secs: u64,
+    trust_client_xff: bool,
+    client_addr: SocketAddr,
+    client: &UpstreamClient,
+    balancer: &Balancer,
+) -> Response {
     let mut last_response: Option<Response> = None;
     for attempt in 0..max_attempts {
         let attempt_label = attempt + 1;
-        let (upstream_url, _guard) = match balancer.select(&route) {
+        let (upstream_url, _guard) = match balancer.select(route) {
             Some(x) => x,
             None => {
                 tracing::warn!(
@@ -103,7 +170,7 @@ pub async fn forward(
                     "无可用上游"
                 );
                 last_response =
-                    Some(GatewayError::Proxy(format!("路由 {} 无可用上游", route.name)).into_response());
+                    Some(GatewayError::proxy(format!("路由 {} 无可用上游", route.name)).into_response());
                 continue;
             }
         };
@@ -111,10 +178,7 @@ pub async fn forward(
             ctx = ctx.with_upstream(upstream_url.clone());
         }
 
-        // 5. 路径改写（路由级，未启用则原样返回）
-        let effective_uri = rewrite::apply_rewrite(&original_uri, &route.rewrite);
-
-        // 6. 构造目标 URI（上游 authority + 改写后 path_and_query）
+        let effective_uri = rewrite::apply_rewrite(original_uri, &route.rewrite);
         let target_uri = match build_target_uri(&upstream_url, &effective_uri) {
             Ok(u) => u,
             Err(e) => {
@@ -125,15 +189,14 @@ pub async fn forward(
                     "目标 URI 构造失败"
                 );
                 last_response =
-                    Some(GatewayError::Proxy(format!("目标 URI 构造失败: {e}")).into_response());
+                    Some(GatewayError::proxy_with_source("目标 URI 构造失败", e).into_response());
                 continue;
             }
         };
 
-        // 7. 构造代理请求：克隆头 → 处理逐跳头/XFF/Host → 组装
         let mut headers = original_headers.clone();
         protocol::strip_hop_by_hop_headers(&mut headers);
-        protocol::append_x_forwarded_for(&mut headers, client_addr);
+        protocol::append_x_forwarded_for(&mut headers, client_addr, trust_client_xff);
         set_host_header(&mut headers, &upstream_url);
 
         let proxy_req = match Request::builder()
@@ -153,12 +216,11 @@ pub async fn forward(
                     "构造代理请求失败"
                 );
                 last_response =
-                    Some(GatewayError::Proxy(format!("构造代理请求失败: {e}")).into_response());
+                    Some(GatewayError::proxy_with_source("构造代理请求失败", e).into_response());
                 continue;
             }
         };
 
-        // 8. 超时管控转发（带 tracing span 关联全链路）
         let span = tracing::info_span!(
             "proxy_forward",
             request_id = %ctx.request_id,
@@ -178,14 +240,9 @@ pub async fn forward(
         match result {
             Ok(Ok(upstream_resp)) => {
                 let status = upstream_resp.status();
-                // 记录上游转发指标
-                metrics::record_upstream_request(
-                    &upstream_url,
-                    status.as_u16(),
-                    attempt_start.elapsed(),
-                );
-                // 5xx + 幂等方法 + 仍有重试次数 → 重试
-                if retry::is_retryable_status(status, &method) && attempt + 1 < max_attempts {
+                metrics::record_upstream_request(&upstream_url, status.as_u16(), attempt_start.elapsed());
+                if retry::is_retryable_status(status, method) && attempt + 1 < max_attempts {
+                    let _ = upstream_resp.into_body().collect().await;
                     metrics::record_upstream_retry(&route.name);
                     tracing::warn!(
                         request_id = %ctx.request_id,
@@ -194,7 +251,9 @@ pub async fn forward(
                         elapsed_ms = ctx.elapsed_millis(),
                         "上游返回可重试状态码，准备重试"
                     );
-                    last_response = Some(convert_response(upstream_resp));
+                    last_response = Some(
+                        GatewayError::proxy(format!("上游返回 {status}")).into_response(),
+                    );
                     continue;
                 }
                 tracing::info!(
@@ -207,14 +266,8 @@ pub async fn forward(
                 return convert_response(upstream_resp);
             }
             Ok(Err(e)) => {
-                // 连接错误记录上游指标（状态码 502 表示网关错误）
-                metrics::record_upstream_request(
-                    &upstream_url,
-                    502,
-                    attempt_start.elapsed(),
-                );
-                // 连接错误/超时 + 仍有重试次数 → 重试
-                if retry::is_retryable_error(&e) && attempt + 1 < max_attempts {
+                metrics::record_upstream_request(&upstream_url, 502, attempt_start.elapsed());
+                if retry::is_retryable_error(&e, method) && attempt + 1 < max_attempts {
                     metrics::record_upstream_retry(&route.name);
                     tracing::warn!(
                         request_id = %ctx.request_id,
@@ -224,7 +277,7 @@ pub async fn forward(
                         "转发失败，准备重试"
                     );
                     last_response =
-                        Some(GatewayError::Proxy(format!("上游请求失败: {e}")).into_response());
+                        Some(GatewayError::proxy_with_source("上游请求失败", e).into_response());
                     continue;
                 }
                 tracing::warn!(
@@ -233,16 +286,10 @@ pub async fn forward(
                     elapsed_ms = ctx.elapsed_millis(),
                     "上游请求失败"
                 );
-                return GatewayError::Proxy(format!("上游请求失败: {e}")).into_response();
+                return GatewayError::proxy_with_source("上游请求失败", e).into_response();
             }
             Err(_) => {
-                // 超时记录上游指标（状态码 504 表示网关超时）
-                metrics::record_upstream_request(
-                    &upstream_url,
-                    504,
-                    attempt_start.elapsed(),
-                );
-                // 超时 + 仍有重试次数 → 重试
+                metrics::record_upstream_request(&upstream_url, 504, attempt_start.elapsed());
                 if attempt + 1 < max_attempts {
                     metrics::record_upstream_retry(&route.name);
                     tracing::warn!(
@@ -268,13 +315,128 @@ pub async fn forward(
         }
     }
 
-    // 重试耗尽，返回最后一次错误响应
     tracing::warn!(
         request_id = %ctx.request_id,
         attempts = max_attempts,
         "重试耗尽"
     );
-    last_response.unwrap_or_else(|| GatewayError::Proxy("重试耗尽".into()).into_response())
+    last_response.unwrap_or_else(|| GatewayError::proxy("重试耗尽").into_response())
+}
+
+/// 流式模式转发：请求体直接透传，不支持重试（适用于 SSE/大文件/无重试路由）
+#[allow(clippy::too_many_arguments)]
+async fn forward_streaming(
+    mut ctx: RequestContext,
+    method: &http::Method,
+    original_uri: &Uri,
+    original_headers: &HeaderMap,
+    body: axum::body::Body,
+    route: &std::sync::Arc<crate::config::RouteConfig>,
+    timeout_secs: u64,
+    trust_client_xff: bool,
+    client_addr: SocketAddr,
+    client: &UpstreamClient,
+    balancer: &Balancer,
+) -> Response {
+    let (upstream_url, _guard) = match balancer.select(route) {
+        Some(x) => x,
+        None => {
+            tracing::warn!(
+                request_id = %ctx.request_id,
+                route = %route.name,
+                "无可用上游"
+            );
+            return GatewayError::proxy(format!("路由 {} 无可用上游", route.name)).into_response();
+        }
+    };
+    ctx = ctx.with_upstream(upstream_url.clone());
+
+    let effective_uri = rewrite::apply_rewrite(original_uri, &route.rewrite);
+    let target_uri = match build_target_uri(&upstream_url, &effective_uri) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!(
+                request_id = %ctx.request_id,
+                error = %e,
+                "目标 URI 构造失败"
+            );
+            return GatewayError::proxy_with_source("目标 URI 构造失败", e).into_response();
+        }
+    };
+
+    let mut headers = original_headers.clone();
+    protocol::strip_hop_by_hop_headers(&mut headers);
+    protocol::append_x_forwarded_for(&mut headers, client_addr, trust_client_xff);
+    set_host_header(&mut headers, &upstream_url);
+
+    let proxy_req = match Request::builder()
+        .method(method.clone())
+        .uri(target_uri)
+        .body(body)
+    {
+        Ok(mut r) => {
+            *r.headers_mut() = headers;
+            r
+        }
+        Err(e) => {
+            tracing::error!(
+                request_id = %ctx.request_id,
+                error = %e,
+                "构造代理请求失败"
+            );
+            return GatewayError::proxy_with_source("构造代理请求失败", e).into_response();
+        }
+    };
+
+    let span = tracing::info_span!(
+        "proxy_forward",
+        request_id = %ctx.request_id,
+        route = %ctx.route_name(),
+        upstream = %upstream_url,
+        method = %method,
+        attempt = 1u32,
+    );
+    let attempt_start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(timeout_secs.max(1)),
+        client.request(proxy_req),
+    )
+    .instrument(span)
+    .await;
+
+    match result {
+        Ok(Ok(upstream_resp)) => {
+            let status = upstream_resp.status();
+            metrics::record_upstream_request(&upstream_url, status.as_u16(), attempt_start.elapsed());
+            tracing::info!(
+                request_id = %ctx.request_id,
+                status = status.as_u16(),
+                elapsed_ms = ctx.elapsed_millis(),
+                "转发完成"
+            );
+            convert_response(upstream_resp)
+        }
+        Ok(Err(e)) => {
+            metrics::record_upstream_request(&upstream_url, 502, attempt_start.elapsed());
+            tracing::warn!(
+                request_id = %ctx.request_id,
+                error = %e,
+                elapsed_ms = ctx.elapsed_millis(),
+                "上游请求失败"
+            );
+            GatewayError::proxy_with_source("上游请求失败", e).into_response()
+        }
+        Err(_) => {
+            metrics::record_upstream_request(&upstream_url, 504, attempt_start.elapsed());
+            tracing::warn!(
+                request_id = %ctx.request_id,
+                timeout_secs,
+                elapsed_ms = ctx.elapsed_millis(),
+                "上游请求超时"
+            );
+            GatewayError::Timeout(format!("上游请求超时({timeout_secs}s)")).into_response()
+        }
+    }
 }
 
 /// 将上游响应转为 axum 响应（body 透传）
@@ -294,22 +456,44 @@ where
 }
 
 /// 构造目标 URI：保留上游 scheme://authority，路径与 query 取自原始请求
+///
+/// 使用 `Uri::builder()` 分字段构造，避免字符串拼接导致的编码问题：
+/// - scheme / authority 取自上游地址
+/// - path_and_query 取自原始请求（含改写后的路径）
+///
+/// 各字段独立解析校验，非法字段直接返回错误而非产生畸形 URI。
 fn build_target_uri(upstream: &str, original: &Uri) -> Result<Uri> {
     let base: Uri = upstream.parse().map_err(|e: http::uri::InvalidUri| {
-        GatewayError::Proxy(format!("上游地址解析失败: {e}"))
+        GatewayError::proxy_with_source("上游地址解析失败", e)
     })?;
-    let scheme = base.scheme_str().unwrap_or("http");
-    let authority = base
-        .authority()
-        .ok_or_else(|| GatewayError::Proxy(format!("上游地址缺少 authority: {upstream}")))?;
-    let path_and_query = original
+    let scheme = base
+        .scheme()
+        .cloned()
+        .unwrap_or(http::uri::Scheme::HTTP);
+    let authority = base.authority().ok_or_else(|| {
+        GatewayError::proxy(format!("上游地址缺少 authority: {upstream}"))
+    })?;
+
+    // path_and_query 必须以 '/' 开头，否则构造的 URI 非法；
+    // 原始请求缺失时回退到根路径 "/"
+    let pq_str = original
         .path_and_query()
         .map(|pq| pq.as_str())
+        .filter(|s| !s.is_empty())
         .unwrap_or("/");
-    let target = format!("{scheme}://{authority}{path_and_query}");
-    target
-        .parse()
-        .map_err(|e: http::uri::InvalidUri| GatewayError::Proxy(format!("目标 URI 解析失败: {e}")))
+    let pq: String = if pq_str.starts_with('/') {
+        pq_str.to_string()
+    } else {
+        // 路径不以 / 开头时补全，避免构造出相对引用
+        format!("/{pq_str}")
+    };
+
+    http::uri::Builder::new()
+        .scheme(scheme)
+        .authority(authority.clone())
+        .path_and_query(&pq[..])
+        .build()
+        .map_err(|e| GatewayError::proxy_with_source("目标 URI 构造失败", e))
 }
 
 /// 设置 Host 头为上游地址的 authority
