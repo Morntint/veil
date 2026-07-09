@@ -1,0 +1,27 @@
+# 生产环境配置（覆盖 default.toml）
+
+[server]
+host = "0.0.0.0"
+port = 8080
+workers = 0
+graceful_shutdown_timeout_secs = 60
+
+[log]
+level = "info"
+format = "json"
+output = "console"
+
+[network]
+max_connections = 20000
+request_size_limit_bytes = 2097152
+
+[security]
+enable_rate_limit = true
+rate_limit_per_second = 5000
+rate_limit_burst = 10000
+enable_ip_blacklist = true
+ip_blacklist = []
+
+[monitor]
+enable_metrics = true
+enable_health_check = true

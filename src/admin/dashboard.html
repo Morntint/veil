@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Veil · 网关监控面板</title>
+<style>
+  :root{
+    --bg:#0a0c10;
+    --bg-elev:#11141b;
+    --bg-card:#151922;
+    --border:#232936;
+    --border-soft:#1c2230;
+    --fg:#e6e9ef;
+    --fg-dim:#8b94a6;
+    --fg-mute:#5a6478;
+    --accent:#5eead4;
+    --accent-glow:rgba(94,234,212,.35);
+    --amber:#fbbf24;
+    --rose:#fb7185;
+    --violet:#a78bfa;
+    --ok:#34d399;
+    --grid:rgba(255,255,255,.04);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"SF Mono","JetBrains Mono","Cascadia Code",Consolas,monospace;
+    background:var(--bg);
+    color:var(--fg);
+    font-size:13px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(94,234,212,.08), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(167,139,250,.06), transparent);
+    background-attachment:fixed;
+  }
+  body::before{
+    content:"";
+    position:fixed;inset:0;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+    opacity:.025;
+    pointer-events:none;
+    z-index:1;
+  }
+  .wrap{max-width:1480px;margin:0 auto;padding:28px 32px 60px;position:relative;z-index:2}
+
+  /* ===== Header ===== */
+  header{
+    display:flex;align-items:center;justify-content:space-between;
+    padding-bottom:22px;border-bottom:1px solid var(--border-soft);
+    margin-bottom:28px;
+  }
+  .brand{display:flex;align-items:baseline;gap:14px}
+  .logo{
+    font-family:"SF Mono",monospace;
+    font-size:30px;font-weight:700;letter-spacing:-.02em;
+    background:linear-gradient(135deg,var(--accent) 0%,var(--violet) 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    position:relative;
+  }
+  .logo::after{
+    content:"";position:absolute;left:0;right:0;bottom:-2px;height:1px;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent);
+    opacity:.6;
+  }
+  .tagline{color:var(--fg-mute);font-size:11px;letter-spacing:.18em;text-transform:uppercase}
+  .meta{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .badge{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:5px 11px;border:1px solid var(--border);
+    border-radius:4px;background:var(--bg-elev);
+    font-size:11px;color:var(--fg-dim);
+  }
+  .badge .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .badge.env{color:var(--accent);border-color:rgba(94,234,212,.25)}
+  .badge.ver{color:var(--fg-mute)}
+
+  /* ===== Status hero ===== */
+  .hero{
+    display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px;
+  }
+  .stat{
+    position:relative;overflow:hidden;
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:8px;padding:18px 20px;
+    transition:border-color .2s;
+  }
+  .stat:hover{border-color:var(--accent)}
+  .stat::before{
+    content:"";position:absolute;top:0;left:0;width:2px;height:100%;
+    background:var(--accent);opacity:0;transition:opacity .2s;
+  }
+  .stat:hover::before{opacity:1}
+  .stat .label{
+    font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-mute);
+    margin-bottom:10px;
+  }
+  .stat .value{
+    font-size:32px;font-weight:600;color:var(--fg);letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums;
+  }
+  .stat .value.accent{color:var(--accent);text-shadow:0 0 18px var(--accent-glow)}
+  .stat .value.amber{color:var(--amber)}
+  .stat .value.rose{color:var(--rose)}
+  .stat .sub{font-size:11px;color:var(--fg-mute);margin-top:6px}
+
+  /* ===== Grid ===== */
+  .grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;margin-bottom:16px}
+  .grid.even{grid-template-columns:1fr 1fr}
+  .panel{
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:8px;padding:18px 20px;position:relative;
+  }
+  .panel-head{
+    display:flex;align-items:center;justify-content:space-between;
+    margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border-soft);
+  }
+  .panel-title{
+    font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-dim);
+    display:flex;align-items:center;gap:8px;
+  }
+  .panel-title::before{
+    content:"";width:3px;height:11px;background:var(--accent);border-radius:1px;
+  }
+  .panel-actions{display:flex;gap:8px;align-items:center}
+  .live{
+    display:inline-flex;align-items:center;gap:6px;font-size:10px;color:var(--ok);
+    letter-spacing:.1em;
+  }
+  .live .pulse{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(52,211,153,.5)}50%{opacity:.4;box-shadow:0 0 0 6px rgba(52,211,153,0)}}
+
+  canvas{display:block;width:100%}
+  .chart-wrap{position:relative;height:180px}
+
+  /* ===== Status codes bar ===== */
+  .codes{display:flex;flex-direction:column;gap:9px}
+  .code-row{display:grid;grid-template-columns:64px 1fr 70px;align-items:center;gap:10px;font-size:11px}
+  .code-row .c{color:var(--fg-dim);font-variant-numeric:tabular-nums}
+  .code-row .bar{height:6px;background:var(--bg-elev);border-radius:3px;overflow:hidden}
+  .code-row .fill{height:100%;border-radius:3px;transition:width .6s ease}
+  .code-row .n{color:var(--fg);text-align:right;font-variant-numeric:tabular-nums}
+  .fill.f2{background:linear-gradient(90deg,#34d399,#5eead4)}
+  .fill.f3{background:linear-gradient(90deg,#fbbf24,#fb923c)}
+  .fill.f4{background:linear-gradient(90deg,#fb7185,#f43f5e)}
+  .fill.f5{background:linear-gradient(90deg,#a78bfa,#8b5cf6)}
+
+  /* ===== Table ===== */
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{
+    text-align:left;font-weight:500;color:var(--fg-mute);
+    font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    padding:8px 10px;border-bottom:1px solid var(--border-soft);
+  }
+  td{padding:11px 10px;border-bottom:1px solid var(--border-soft);color:var(--fg-dim)}
+  tr:hover td{background:rgba(94,234,212,.025);color:var(--fg)}
+  td .mono{color:var(--accent)}
+  td .up{display:inline-block;margin-right:6px;color:var(--fg-dim)}
+  .pill{
+    display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;
+    background:var(--bg-elev);border:1px solid var(--border);color:var(--fg-dim);
+  }
+  .pill.lb{color:var(--violet);border-color:rgba(167,139,250,.25)}
+  .pill.match{color:var(--amber);border-color:rgba(251,191,36,.25)}
+
+  /* ===== Upstream list ===== */
+  .ups{display:flex;flex-direction:column;gap:12px}
+  .up-item{
+    padding:12px 14px;background:var(--bg-elev);border:1px solid var(--border-soft);
+    border-radius:6px;
+  }
+  .up-item .url{font-size:11px;color:var(--accent);word-break:break-all;margin-bottom:8px}
+  .up-item .stats{display:flex;gap:18px;font-size:11px;color:var(--fg-dim)}
+  .up-item .stats b{color:var(--fg);font-weight:600;margin-left:5px}
+  .up-item .stats .err{color:var(--rose)}
+
+  /* ===== Config ===== */
+  .config-view{
+    background:#07090d;border:1px solid var(--border-soft);border-radius:6px;
+    padding:14px 16px;font-size:11px;line-height:1.7;color:var(--fg-dim);
+    max-height:340px;overflow:auto;white-space:pre-wrap;word-break:break-word;
+  }
+  .config-view .k{color:var(--accent)}
+  .config-view .s{color:var(--amber)}
+  .config-view .n{color:var(--violet)}
+
+  /* ===== Actions ===== */
+  .btn{
+    font-family:inherit;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    padding:7px 14px;border:1px solid var(--border);background:var(--bg-elev);
+    color:var(--fg-dim);border-radius:4px;cursor:pointer;transition:all .15s;
+  }
+  .btn:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 0 12px rgba(94,234,212,.15)}
+  .btn:active{transform:translateY(1px)}
+  .btn.primary{background:rgba(94,234,212,.1);border-color:var(--accent);color:var(--accent)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+
+  /* ===== Toast ===== */
+  .toast{
+    position:fixed;bottom:24px;right:24px;z-index:100;
+    padding:12px 18px;background:var(--bg-card);border:1px solid var(--accent);
+    border-radius:6px;color:var(--fg);font-size:12px;
+    box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 24px rgba(94,234,212,.15);
+    opacity:0;transform:translateY(10px);transition:all .25s;pointer-events:none;
+  }
+  .toast.show{opacity:1;transform:translateY(0)}
+  .toast.err{border-color:var(--rose);box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 24px rgba(251,113,133,.15)}
+
+  .empty{color:var(--fg-mute);font-size:11px;text-align:center;padding:20px;font-style:italic}
+
+  /* scrollbar */
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-track{background:var(--bg)}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--fg-mute)}
+
+  @media(max-width:1100px){
+    .hero{grid-template-columns:repeat(2,1fr)}
+    .grid,.grid.even{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="logo">Veil</div>
+      <div class="tagline">Gateway · 实时监控面板</div>
+    </div>
+    <div class="meta">
+      <span class="badge"><span class="dot"></span><span id="status-text">运行中</span></span>
+      <span class="badge env" id="env-badge">env: default</span>
+      <span class="badge ver" id="ver-badge">v0.1.0</span>
+      <span class="badge" id="uptime-badge">uptime 0s</span>
+      <span class="badge" id="cfg-badge">cfg v0</span>
+    </div>
+  </header>
+
+  <!-- Hero stats -->
+  <section class="hero">
+    <div class="stat">
+      <div class="label">活跃连接</div>
+      <div class="value accent" id="s-active">0</div>
+      <div class="sub">当前处理中请求</div>
+    </div>
+    <div class="stat">
+      <div class="label">请求总数</div>
+      <div class="value" id="s-total">0</div>
+      <div class="sub" id="s-total-sub">累计转发请求</div>
+    </div>
+    <div class="stat">
+      <div class="label">错误率</div>
+      <div class="value rose" id="s-err">0.00%</div>
+      <div class="sub" id="s-err-sub">5xx / 总请求</div>
+    </div>
+    <div class="stat">
+      <div class="label">平均延迟</div>
+      <div class="value amber" id="s-latency">0ms</div>
+      <div class="sub">P50 上游响应</div>
+    </div>
+  </section>
+
+  <!-- QPS chart + status codes -->
+  <section class="grid">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">请求速率 · QPS</div>
+        <div class="live"><span class="pulse"></span>LIVE</div>
+      </div>
+      <div class="chart-wrap"><canvas id="qps-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">状态码分布</div>
+        <div class="live"><span class="pulse"></span>LIVE</div>
+      </div>
+      <div class="codes" id="codes-list">
+        <div class="empty">采集数据中…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Latency histogram + upstream -->
+  <section class="grid">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">延迟分布直方图</div>
+        <div class="live"><span class="pulse"></span>LIVE</div>
+      </div>
+      <div class="chart-wrap"><canvas id="lat-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">上游节点状态</div>
+        <div class="live"><span class="pulse"></span>LIVE</div>
+      </div>
+      <div class="ups" id="ups-list"><div class="empty">加载中…</div></div>
+    </div>
+  </section>
+
+  <!-- Routes table -->
+  <section class="panel" style="margin-bottom:16px">
+    <div class="panel-head">
+      <div class="panel-title">路由表</div>
+      <div class="panel-actions">
+        <button class="btn" id="btn-reload">重载配置</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>名称</th><th>匹配类型</th><th>路径</th>
+            <th>上游节点</th><th>负载均衡</th><th>重试</th><th>超时</th><th>改写</th>
+          </tr>
+        </thead>
+        <tbody id="routes-body">
+          <tr><td colspan="8" class="empty">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Security + Config -->
+  <section class="grid even">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">安全防护</div>
+        <div class="live"><span class="pulse"></span>LIVE</div>
+      </div>
+      <div class="codes" id="sec-list">
+        <div class="code-row"><span class="c">限流触发</span><div class="bar"><div class="fill f4" id="sec-rl-bar" style="width:0%"></div></div><span class="n" id="sec-rl">0</span></div>
+        <div class="code-row"><span class="c">鉴权失败</span><div class="bar"><div class="fill f4" id="sec-af-bar" style="width:0%"></div></div><span class="n" id="sec-af">0</span></div>
+        <div class="code-row"><span class="c">重试次数</span><div class="bar"><div class="fill f5" id="sec-rt-bar" style="width:0%"></div></div><span class="n" id="sec-rt">0</span></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">当前生效配置</div>
+        <div class="panel-actions"><button class="btn" id="btn-refresh-cfg">刷新</button></div>
+      </div>
+      <div class="config-view" id="cfg-view">加载中…</div>
+    </div>
+  </section>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ====== 全局状态 ======
+const POLL_MS = 2000;
+const qpsHistory = []; // {t, v}
+const MAX_HIST = 60;
+
+// ====== 工具函数 ======
+const $ = id => document.getElementById(id);
+const fmt = n => n>=1000 ? (n/1000).toFixed(1)+'k' : String(n);
+const fmtMs = s => s<1 ? (s*1000).toFixed(0)+'ms' : s.toFixed(2)+'s';
+
+function toast(msg, isErr=false){
+  const el = $('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (isErr?' err':'');
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>el.className='toast', 2600);
+}
+
+async function fetchJSON(url){
+  const r = await fetch(url, {cache:'no-store'});
+  if(!r.ok) throw new Error(`${url} → ${r.status}`);
+  return r.json();
+}
+async function fetchText(url){
+  const r = await fetch(url, {cache:'no-store'});
+  if(!r.ok) throw new Error(`${url} → ${r.status}`);
+  return r.text();
+}
+
+// ====== Prometheus 文本解析 ======
+function parseMetrics(text){
+  const m = {};
+  const lines = text.split('\n');
+  for(const line of lines){
+    if(!line || line.startsWith('#')) continue;
+    // name{labels} value  OR  name value
+    const i = line.indexOf(' ');
+    if(i<0) continue;
+    let keyPart = line.slice(0,i);
+    let val = parseFloat(line.slice(i+1));
+    if(isNaN(val)) continue;
+    let name = keyPart, labels = {};
+    const lb = keyPart.indexOf('{');
+    if(lb>=0){
+      name = keyPart.slice(0,lb);
+      const rb = keyPart.lastIndexOf('}');
+      const inner = keyPart.slice(lb+1,rb);
+      inner.split(',').forEach(p=>{
+        const eq = p.indexOf('=');
+        if(eq>0) labels[p.slice(0,eq).trim()] = p.slice(eq+1).replace(/"/g,'');
+      });
+    }
+    if(!m[name]) m[name] = [];
+    m[name].push({labels, value:val});
+  }
+  return m;
+}
+
+// sum by label extraction
+function sumMetric(arr, filterFn){
+  if(!arr) return 0;
+  return arr.filter(filterFn||(()=>true)).reduce((a,b)=>a+b.value,0);
+}
+
+// ====== 状态/配置/路由 拉取 ======
+async function pollStatus(){
+  try{
+    const s = await fetchJSON('/_admin/status');
+    $('status-text').textContent = s.status==='ok'?'运行中':'降级';
+    $('env-badge').textContent = 'env: '+(s.env||'default');
+    $('ver-badge').textContent = 'v'+(s.version||'');
+    $('uptime-badge').textContent = 'uptime '+fmtUptime(s.uptime_secs||0);
+    $('cfg-badge').textContent = 'cfg v'+(s.config_version||0);
+  }catch(e){ console.warn('status',e); }
+}
+function fmtUptime(s){
+  if(s<60) return s+'s';
+  if(s<3600) return Math.floor(s/60)+'m'+(s%60)+'s';
+  if(s<86400) return Math.floor(s/3600)+'h'+Math.floor((s%3600)/60)+'m';
+  return Math.floor(s/86400)+'d'+Math.floor((s%86400)/3600)+'h';
+}
+
+async function pollRoutes(){
+  try{
+    const r = await fetchJSON('/_admin/routes');
+    const tbody = $('routes-body');
+    if(!r.routes || !r.routes.length){
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">未配置路由</td></tr>';
+      return;
+    }
+    tbody.innerHTML = r.routes.map(rt=>`
+      <tr>
+        <td class="mono">${esc(rt.name)}</td>
+        <td><span class="pill match">${esc(rt.match_type)}</span></td>
+        <td>${esc(rt.path)}</td>
+        <td>${rt.upstream.map(u=>`<span class="up">${esc(u)}</span>`).join('')}</td>
+        <td><span class="pill lb">${esc(rt.load_balance)}</span></td>
+        <td>${rt.retries||0}</td>
+        <td>${rt.timeout_secs||0}s</td>
+        <td>${rt.rewrite_enabled?'<span style="color:var(--ok)">ON</span>':'<span style="color:var(--fg-mute)">OFF</span>'}</td>
+      </tr>
+    `).join('');
+  }catch(e){ console.warn('routes',e); }
+}
+function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+async function pollConfig(){
+  try{
+    const c = await fetchJSON('/_admin/config');
+    $('cfg-view').innerHTML = highlightJSON(c);
+  }catch(e){ $('cfg-view').textContent = '加载失败: '+e.message; }
+}
+function highlightJSON(obj){
+  const s = JSON.stringify(obj, null, 2);
+  return esc(s)
+    .replace(/&quot;([^&]+)&quot;:/g,'<span class="k">&quot;$1&quot;</span>:')
+    .replace(/: &quot;([^&]*)&quot;/g,': <span class="s">&quot;$1&quot;</span>')
+    .replace(/: (-?\d+\.?\d*)/g,': <span class="n">$1</span>')
+    .replace(/: (true|false|null)/g,': <span class="n">$1</span>');
+}
+
+// ====== 指标拉取 + 图表 ======
+async function pollMetrics(){
+  try{
+    const text = await fetchText('/metrics');
+    const m = parseMetrics(text);
+
+    // 活跃连接
+    const active = sumMetric(m['gateway_active_connections']);
+    $('s-active').textContent = fmt(active);
+
+    // 总请求
+    const total = sumMetric(m['gateway_http_requests_total']);
+    $('s-total').textContent = fmt(total);
+    $('s-total-sub').textContent = '累计转发 '+total+' 次';
+
+    // 错误率 (5xx)
+    const errCount = sumMetric(m['gateway_http_requests_total'], x=>x.labels.status && x.labels.status.startsWith('5'));
+    const errRate = total>0 ? (errCount/total*100) : 0;
+    $('s-err').textContent = errRate.toFixed(2)+'%';
+    $('s-err-sub').textContent = errCount+' / '+total+' 错误请求';
+
+    // QPS history (本次 total - 上次 total) / 间隔
+    const now = Date.now();
+    qpsHistory.push({t:now, v: total});
+    if(qpsHistory.length>MAX_HIST) qpsHistory.shift();
+    drawQPS();
+
+    // 状态码分布
+    renderCodes(m['gateway_http_requests_total']||[]);
+
+    // 延迟直方图
+    drawLatency(m['gateway_http_request_duration_seconds_bucket']||[]);
+    const upLatency = m['gateway_upstream_request_duration_seconds_bucket']||[];
+    const p50 = percentile(upLatency, 0.5);
+    $('s-latency').textContent = p50!=null ? fmtMs(p50) : '—';
+
+    // 上游节点
+    renderUpstreams(m['gateway_upstream_requests_total']||[], m['gateway_upstream_request_duration_seconds_bucket']||[]);
+
+    // 安全
+    const rl = sumMetric(m['gateway_rate_limit_total']);
+    const af = sumMetric(m['gateway_auth_failures_total']);
+    const rt = sumMetric(m['gateway_upstream_retries_total']);
+    const maxSec = Math.max(rl,af,rt,1);
+    $('sec-rl').textContent = rl; $('sec-rl-bar').style.width = (rl/maxSec*100)+'%';
+    $('sec-af').textContent = af; $('sec-af-bar').style.width = (af/maxSec*100)+'%';
+    $('sec-rt').textContent = rt; $('sec-rt-bar').style.width = (rt/maxSec*100)+'%';
+
+  }catch(e){ console.warn('metrics',e); }
+}
+
+function renderCodes(arr){
+  const groups = {};
+  arr.forEach(x=>{
+    const s = x.labels.status;
+    if(!s) return;
+    const band = s[0]+'xx';
+    groups[band] = (groups[band]||0) + x.value;
+  });
+  const total = Object.values(groups).reduce((a,b)=>a+b,0)||1;
+  const order = ['2xx','3xx','4xx','5xx'];
+  const cls = {2:'f2',3:'f3',4:'f4',5:'f5'};
+  $('codes-list').innerHTML = order.filter(k=>groups[k]).map(k=>{
+    const v = groups[k];
+    return `<div class="code-row">
+      <span class="c">${k}</span>
+      <div class="bar"><div class="fill ${cls[k[0]]}" style="width:${(v/total*100).toFixed(1)}%"></div></div>
+      <span class="n">${fmt(v)}</span>
+    </div>`;
+  }).join('') || '<div class="empty">暂无数据</div>';
+}
+
+function renderUpstreams(reqArr, latArr){
+  const byUrl = {};
+  reqArr.forEach(x=>{
+    const u = x.labels.upstream;
+    if(!u) return;
+    if(!byUrl[u]) byUrl[u] = {total:0, err:0};
+    byUrl[u].total += x.value;
+    if(x.labels.status && x.labels.status.startsWith('5')) byUrl[u].err += x.value;
+  });
+  const urls = Object.keys(byUrl);
+  if(!urls.length){ $('ups-list').innerHTML = '<div class="empty">暂无上游请求</div>'; return; }
+  $('ups-list').innerHTML = urls.map(u=>{
+    const d = byUrl[u];
+    const errPct = d.total>0 ? (d.err/d.total*100).toFixed(1) : '0.0';
+    return `<div class="up-item">
+      <div class="url">${esc(u)}</div>
+      <div class="stats">
+        <span>请求<b>${fmt(d.total)}</b></span>
+        <span>错误<b class="${d.err>0?'err':''}">${fmt(d.err)} (${errPct}%)</b></span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function percentile(buckets, p){
+  if(!buckets.length) return null;
+  // 找 +Inf 桶作为总数
+  const inf = buckets.find(b=>b.labels.le==='+Inf');
+  const total = inf?inf.value:0;
+  if(total<=0) return null;
+  const target = total*p;
+  const sorted = buckets.filter(b=>b.labels.le && b.labels.le!=='+Inf')
+    .map(b=>({le:parseFloat(b.labels.le), v:b.value}))
+    .sort((a,b)=>a.le-b.le);
+  for(const b of sorted){ if(b.v>=target) return b.le; }
+  return sorted.length?sorted[sorted.length-1].le:null;
+}
+
+// ====== Canvas 图表 ======
+function drawQPS(){
+  const c = $('qps-chart');
+  const dpr = window.devicePixelRatio||1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w*dpr; c.height = h*dpr;
+  const ctx = c.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,w,h);
+
+  // 计算 QPS 序列
+  const qps = [];
+  for(let i=1;i<qpsHistory.length;i++){
+    const dt = (qpsHistory[i].t - qpsHistory[i-1].t)/1000;
+    const dv = qpsHistory[i].v - qpsHistory[i-1].v;
+    qps.push(Math.max(0, dv/Math.max(dt,0.1)));
+  }
+  if(!qps.length){ drawEmpty(ctx,w,h,'等待数据…'); return; }
+
+  const max = Math.max(...qps, 1) * 1.2;
+  const padL=40, padR=12, padT=10, padB=22;
+  const cw = w-padL-padR, ch = h-padT-padB;
+
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,.04)';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#5a6478';
+  ctx.font = '10px monospace';
+  ctx.textAlign='right'; ctx.textBaseline='middle';
+  for(let i=0;i<=4;i++){
+    const y = padT + ch*i/4;
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(w-padR,y); ctx.stroke();
+    ctx.fillText(fmt(max*(1-i/4)), padL-6, y);
+  }
+
+  // area + line
+  const n = qps.length;
+  const x = i => padL + (n<=1?0:cw*i/(n-1));
+  const y = v => padT + ch*(1-v/max);
+
+  ctx.beginPath();
+  ctx.moveTo(x(0), padT+ch);
+  qps.forEach((v,i)=>ctx.lineTo(x(i), y(v)));
+  ctx.lineTo(x(n-1), padT+ch);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0,padT,0,padT+ch);
+  grad.addColorStop(0,'rgba(94,234,212,.35)');
+  grad.addColorStop(1,'rgba(94,234,212,0)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  qps.forEach((v,i)=> i===0?ctx.moveTo(x(i),y(v)):ctx.lineTo(x(i),y(v)));
+  ctx.strokeStyle = '#5eead4';
+  ctx.lineWidth = 1.6;
+  ctx.shadowColor = 'rgba(94,234,212,.5)';
+  ctx.shadowBlur = 8;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // last point
+  if(n){
+    const lx=x(n-1), ly=y(qps[n-1]);
+    ctx.beginPath(); ctx.arc(lx,ly,3,0,Math.PI*2);
+    ctx.fillStyle='#5eead4'; ctx.fill();
+  }
+}
+
+function drawLatency(buckets){
+  const c = $('lat-chart');
+  const dpr = window.devicePixelRatio||1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w*dpr; c.height = h*dpr;
+  const ctx = c.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,w,h);
+
+  const finite = buckets.filter(b=>b.labels.le && b.labels.le!=='+Inf')
+    .map(b=>({le:parseFloat(b.labels.le), v:b.value}))
+    .sort((a,b)=>a.le-b.le);
+  if(!finite.length){ drawEmpty(ctx,w,h,'等待数据…'); return; }
+
+  const max = Math.max(...finite.map(b=>b.v),1);
+  const padL=40, padR=12, padT=10, padB=28;
+  const cw = w-padL-padR, ch = h-padT-padB;
+
+  // grid
+  ctx.strokeStyle='rgba(255,255,255,.04)';
+  ctx.lineWidth=1;
+  ctx.fillStyle='#5a6478'; ctx.font='10px monospace';
+  ctx.textAlign='right'; ctx.textBaseline='middle';
+  for(let i=0;i<=4;i++){
+    const y=padT+ch*i/4;
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(w-padR,y); ctx.stroke();
+    ctx.fillText(fmt(max*(1-i/4)), padL-6, y);
+  }
+
+  // bars
+  const n = finite.length;
+  const bw = cw/n * 0.7;
+  finite.forEach((b,i)=>{
+    const x = padL + cw*(i+0.5)/n - bw/2;
+    const bh = ch * b.v/max;
+    const y = padT+ch-bh;
+    const grad = ctx.createLinearGradient(0,y,0,y+bh);
+    grad.addColorStop(0,'#a78bfa');
+    grad.addColorStop(1,'rgba(167,139,250,.2)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x,y,bw,bh);
+  });
+
+  // x labels
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  finite.forEach((b,i)=>{
+    const x = padL + cw*(i+0.5)/n;
+    ctx.fillStyle='#5a6478';
+    ctx.fillText(fmtMs(b.le), x, padT+ch+6);
+  });
+}
+
+function drawEmpty(ctx,w,h,msg){
+  ctx.fillStyle='#5a6478'; ctx.font='11px monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(msg, w/2, h/2);
+}
+
+// ====== Actions ======
+$('btn-reload').addEventListener('click', async ()=>{
+  const btn = $('btn-reload');
+  btn.disabled = true; btn.textContent = '重载中…';
+  try{
+    const r = await fetch('/_admin/reload',{method:'POST'});
+    const j = await r.json();
+    if(j.success){
+      toast('配置重载成功 · cfg v'+j.config_version);
+      pollStatus(); pollRoutes(); pollConfig();
+    } else {
+      toast('重载失败: '+(j.message||'未知错误'), true);
+    }
+  }catch(e){ toast('重载失败: '+e.message, true); }
+  finally{ btn.disabled=false; btn.textContent='重载配置'; }
+});
+$('btn-refresh-cfg').addEventListener('click', pollConfig);
+
+// ====== 启动轮询 ======
+async function tick(){
+  await Promise.allSettled([pollStatus(), pollMetrics()]);
+}
+async function tickSlow(){
+  await Promise.allSettled([pollRoutes()]);
+}
+
+tick(); tickSlow(); pollConfig();
+setInterval(tick, POLL_MS);
+setInterval(tickSlow, 10000);
+window.addEventListener('resize', ()=>{ drawQPS(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# 开发环境配置（覆盖 default.toml）
+
+[server]
+port = 8080
+
+[log]
+level = "debug"
+format = "text"
+output = "console"
+
+[network]
+max_connections = 1000
+
+[security]
+enable_rate_limit = false
+enable_ip_blacklist = false
+
+[monitor]
+enable_metrics = true
